@@ -23,4 +23,17 @@ export const auditActions = {
   triage_queued: '进入分流队列', triage_retried: '重试风险分流', triage_scored: '模型判定已归档',
   triage_failed: '分流计算失败', unpack_witnessed: '开箱见证签署', downgrade_sample_required: '主管改判，转抽检',
   unpack_held: '主管暂停运输', unpack_reopened: '主管重开复核', sample_mismatch: '抽检封签不符', sample_cleared: '抽检通过',
+  finding_recorded: '登记开箱实查', finding_corrected: '更正实查标签',
+  label_governance_applied: '执行标签治理', training_requested: '发起训练', training_succeeded: '训练完成',
+  training_resumed: '续跑训练', training_halted: '标签更正，训练停下', training_failed: '训练失败',
+  model_published: '发布模型版本', model_reactivated: '回退激活版本', model_retired: '停用模型版本',
+  model_no_fallback: '无可用回退版本', score_invalidated: '旧分失效重算', stale_score_blocked: '拦截晚到旧分',
 };
+export const modelStates = {active: '当前版本', candidate: '候选待发布', retired: '已停用'};
+export const retiredReasons = {
+  label_corrected: '实查标签更正，含旧标签', superseded_by_publish: '被新版本取代',
+};
+export const jobStates = {
+  queued: '排队中', running: '训练中', succeeded: '已完成', halted: '标签更正已停下', failed: '训练失败',
+};
+export const hazardLabels = {true: '发现包装隐患', false: '未发现包装隐患'};

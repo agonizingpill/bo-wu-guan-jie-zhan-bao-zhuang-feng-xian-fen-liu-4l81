@@ -2,10 +2,10 @@ from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from . import loans, reviews, transit, triage
+from . import findings, loans, models, reviews, training, transit, triage
 from .middleware import application_errors, request_history
-from .schemas import (CrateInspection, GallerySetup, LoanIntake, Login, ReopenReview, ReviewDecision,
-                      Role, SampleObservation, StaffMember, TransitReservation, Witness)
+from .schemas import (CrateInspection, FindingIntake, GallerySetup, LoanIntake, Login, ReopenReview,
+                      ReviewDecision, Role, SampleObservation, StaffMember, TransitReservation, Witness)
 from .security import issue_token, require, signed_in, verify_password
 from .storage import audit, connection, queue
 
@@ -101,8 +101,49 @@ def dispatch(loan_id: int, staff=Depends(operator)):
 def request_score(loan_id: int, staff=Depends(operator)):
     with connection() as db:
         record, case_id = triage.enqueue(db, loan_id, staff.username)
-    triage.notify_worker(case_id)
     return record
+
+
+@app.get('/model/versions')
+def model_versions(staff=Depends(signed_in)):
+    with connection() as db:
+        return {'active': models.active_version(db), 'versions': models.list_versions(db)}
+
+
+@app.get('/training/jobs')
+def training_jobs(staff=Depends(signed_in)):
+    with connection() as db:
+        return models.list_jobs(db)
+
+
+@app.post('/loans/{loan_id}/findings', status_code=201)
+def record_finding(loan_id: int, data: FindingIntake, staff=Depends(operator)):
+    with connection() as db:
+        return findings.register(db, loan_id, data, staff.username)
+
+
+@app.post('/training/jobs', status_code=202)
+def start_training(staff=Depends(operator)):
+    from .models import TRAINING_QUEUE, notify
+    with connection() as db:
+        job = training.create_job(db, staff.username)
+    notify(TRAINING_QUEUE, job['id'])
+    return job
+
+
+@app.post('/training/jobs/{job_id}/resume', status_code=202)
+def resume_training(job_id: int, staff=Depends(operator)):
+    from .models import TRAINING_QUEUE, notify
+    with connection() as db:
+        job = training.resume_job(db, job_id, staff.username)
+    notify(TRAINING_QUEUE, job['id'])
+    return job
+
+
+@app.post('/model/versions/{version_id}/publish')
+def publish_version(version_id: int, staff=Depends(operator)):
+    with connection() as db:
+        return models.publish(db, version_id, staff.username)
 
 
 @app.post('/loans/{loan_id}/review/witness')

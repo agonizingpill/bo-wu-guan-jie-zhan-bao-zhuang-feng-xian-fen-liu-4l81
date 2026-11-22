@@ -7,12 +7,21 @@ from .storage import audit
 
 ARCHIVE = '''
 SELECT l.*, to_jsonb(c) AS crate, to_jsonb(w) AS transit, to_jsonb(t) AS triage,
-       to_jsonb(r) AS review
+       to_jsonb(r) AS review, to_jsonb(f) AS finding,
+       (SELECT count(*) FROM triage_case tc WHERE tc.loan_id=l.id
+          AND tc.score_state='invalidated') AS invalidated_scores,
+       (SELECT jsonb_agg(jsonb_build_object(
+           'id', h.id, 'version_label', h.version_label, 'probability', h.probability,
+           'risk', h.risk, 'score_state', h.score_state, 'invalidated_reason', h.invalidated_reason,
+           'computed_at', h.computed_at) ORDER BY h.id)
+        FROM triage_score_history h JOIN triage_case hc ON hc.id=h.case_id
+        WHERE hc.loan_id=l.id) AS score_history
 FROM exhibit_loan l
 LEFT JOIN crate_check c ON c.loan_id=l.id
 LEFT JOIN transit_window w ON w.loan_id=l.id AND w.status IN ('booked','conflict','dispatched')
-LEFT JOIN triage_case t ON t.loan_id=l.id
-LEFT JOIN unpack_review r ON r.case_id=t.id
+LEFT JOIN LATERAL (SELECT * FROM triage_case WHERE loan_id=l.id ORDER BY id DESC LIMIT 1) t ON TRUE
+LEFT JOIN unpack_review r ON r.case_id=t.id AND r.status <> 'voided'
+LEFT JOIN LATERAL (SELECT * FROM inspection_finding WHERE loan_id=l.id AND superseded_at IS NULL LIMIT 1) f ON TRUE
 '''
 
 
@@ -26,8 +35,11 @@ def dispatch_issue(record):
         return '请先登记运输窗口'
     if window['status'] == 'conflict':
         return window['conflict_reason']
+    triage = record['triage']
+    if not triage or triage['status'] != 'scored' or triage['score_state'] != 'current':
+        return '风险分流尚未给出当前有效评分，旧分不能放行'
     if record['status'] != LoanStatus.READY:
-        return '风险分流、开箱复核或抽检尚未放行'
+        return '开箱复核或抽检尚未放行'
     return None
 
 

@@ -3,7 +3,8 @@ from datetime import datetime
 
 from psycopg.types.json import Jsonb
 
-from src.scoring import score
+from src import findings, scoring
+from src.models import active_version
 from src.security import hash_password
 from src.storage import audit, connection, initialize
 
@@ -19,9 +20,31 @@ LOANS = (
      'BX-023', 'SEAL-2611-023', 'bronze', 'suspension', 'direct', 43, 0, '13:45', '14:25', '沪A·藏06'),
 )
 
+FINDINGS = {
+    'BR-2611-014': (True, '开箱见外箱角部泡棉塌陷，山地转运致内衬松动，存在包装隐患，需悬托复核。'),
+}
+
 
 def clock(value):
     return datetime.fromisoformat(f'2026-11-26T{value}:00+08:00')
+
+
+def ensure_baseline_model(db):
+    if active_version(db):
+        return active_version(db)
+    samples = findings.training_samples(db)
+    parameters, metrics = scoring.train(samples, seed=scoring.SEED)
+    job = db.execute('''INSERT INTO training_job (status,stage,manifest,requested_by,checkpoint,started_at,finished_at)
+        VALUES ('succeeded','done',%s,'operator',100,now(),now()) RETURNING id''',
+                     (Jsonb({'samples': samples, 'resumed': 0}),)).fetchone()
+    version = db.execute('''INSERT INTO model_version
+        (version,status,metrics,parameters,training_rows_sha256,training_job_id,published_at)
+        VALUES (%s,'active',%s,%s,%s,%s,now()) RETURNING *''',
+                         ('crate-inspection-logit-v1', Jsonb(metrics), Jsonb(parameters),
+                          metrics['training_rows_sha256'], job['id'])).fetchone()
+    db.execute('UPDATE training_job SET model_version_id=%s WHERE id=%s', (version['id'], job['id']))
+    audit(db, None, 'operator', 'model_published', version=version['version'], reason='baseline_seed')
+    return version
 
 
 def seed():
@@ -37,6 +60,7 @@ def seed():
         if setup_inserted:
             audit(db, None, 'supervisor', 'gallery_setup', window_id=setup_inserted['id'],
                   gallery='纸本展厅', label='轨道灯标定')
+        model = ensure_baseline_model(db)
         inserted = 0
         for (accession, name, lender, gallery, due, crate, seal, material, packing, route, rh,
              transfers, start, end, vehicle) in LOANS:
@@ -66,12 +90,29 @@ def seed():
             if is_blocked:
                 continue
             snapshot = dict(material=material, packing=packing, route_type=route, max_rh=rh, transfers=transfers)
-            probability, risk, evidence = score(snapshot)
+            probability, risk, evidence = scoring.score(snapshot, model['parameters'])
             assert risk == ('high' if is_sample else 'low'), (accession, probability)
-            case_id = db.execute('''INSERT INTO triage_case (loan_id,status,input_snapshot,probability,risk,evidence,attempts,requested_by,computed_at)
-                          VALUES (%s,'scored',%s,%s,%s,%s,1,'operator',now()) RETURNING id''',
-                                 (loan_id, Jsonb(snapshot), probability, risk, Jsonb(evidence))).fetchone()['id']
-            audit(db, loan_id, 'worker', 'triage_scored', case_id=case_id, risk=risk, probability=probability)
+            case_id = db.execute('''INSERT INTO triage_case
+                (loan_id,status,input_snapshot,probability,risk,evidence,attempts,requested_by,computed_at,model_version_id)
+                VALUES (%s,'scored',%s,%s,%s,%s,1,'operator',now(),%s) RETURNING id''',
+                                 (loan_id, Jsonb(snapshot), probability, risk,
+                                  Jsonb({**model['metrics'], **evidence, 'model_version': model['version']}),
+                                  model['id'])).fetchone()['id']
+            db.execute('''INSERT INTO triage_score_history
+                (case_id,model_version_id,version_label,probability,risk,evidence,score_state,computed_at)
+                VALUES (%s,%s,%s,%s,%s,%s,'current',now())''',
+                       (case_id, model['id'], model['version'], probability, risk,
+                        Jsonb({**model['metrics'], **evidence, 'model_version': model['version']})))
+            audit(db, loan_id, 'worker', 'triage_scored', case_id=case_id, risk=risk,
+                  probability=probability, model_version=model['version'])
+            if accession in FINDINGS:
+                hazard, observation = FINDINGS[accession]
+                db.execute('''INSERT INTO inspection_finding
+                    (loan_id,packing_hazard,observation,feature_snapshot,label_version,recorded_by)
+                    VALUES (%s,%s,%s,%s,1,'operator')''',
+                           (loan_id, hazard, observation, Jsonb(snapshot)))
+                audit(db, loan_id, 'operator', 'finding_recorded', label_version=1,
+                      packing_hazard=hazard, observation=observation)
             if is_sample:
                 witness = '两侧内衬贴合，器口与肩部无新裂纹。'
                 reason = '开箱确认器物由独立悬托固定，震动痕迹仅见外箱。按规程复核封签。'
@@ -81,7 +122,9 @@ def seed():
                            (case_id, witness, clock('09:15'), reason, clock('09:28')))
                 audit(db, loan_id, 'operator', 'unpack_witnessed', observation=witness)
                 audit(db, loan_id, 'supervisor', 'downgrade_sample_required', reason=reason)
-        return {'inserted_loans': inserted, 'total_loans': db.execute('SELECT count(*) AS n FROM exhibit_loan').fetchone()['n']}
+        return {'inserted_loans': inserted,
+                'total_loans': db.execute('SELECT count(*) AS n FROM exhibit_loan').fetchone()['n'],
+                'active_model': active_version(db)['version']}
 
 
 if __name__ == '__main__':

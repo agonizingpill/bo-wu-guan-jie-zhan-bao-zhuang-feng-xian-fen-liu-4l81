@@ -163,6 +163,29 @@ dialog::backdrop { background: oklch(26% .031 55 / .42); }
 .login-roles button { margin: 0 4px 5px 0; font-size: 12px; padding: 5px 8px; }
 @keyframes emerge { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
 .page-heading, .notice:not([hidden]) { animation: emerge .3s cubic-bezier(.16, 1, .3, 1) both; }
+.governance, .jobs, .finding-panel, .score-history { margin-top: 22px; border-top: 1px solid var(--rule); padding-top: 15px; }
+.section-line { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.section-line h3 { margin: 0; }
+.model-current { background: var(--linen); border-left: 3px solid var(--pine); padding: 12px 15px; margin-bottom: 12px; }
+.model-current small, .version-row small, .job-list small, .finding-readout small { display: block; color: var(--muted); margin-top: 3px; }
+.model-current p { margin: 6px 0 0; color: var(--muted); font-size: 13px; }
+.version-list { display: grid; gap: 10px; }
+.version-row { border: 1px solid var(--rule); padding: 11px 14px; display: grid; gap: 6px; background: var(--paper); }
+.version-row[data-state='retired'] { opacity: .86; background: var(--linen); }
+.version-row form { justify-self: end; }
+.retired-reason { color: var(--rust); margin: 0; font-size: 13px; }
+.job-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; }
+.job-list li { border: 1px solid var(--rule); padding: 10px 13px; }
+.job-list form { margin-top: 8px; }
+.finding-box { display: grid; gap: 12px; }
+.finding-readout { background: var(--linen); padding: 11px 14px; border-left: 3px solid var(--rust); }
+.finding-readout h4 { margin: 0 0 7px; }
+.finding-readout p { margin: 7px 0 0; }
+.finding-form label { display: grid; gap: 6px; margin-bottom: 10px; }
+.muted { color: var(--muted); font-size: 12px; }
+.score-history ol { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
+.score-history li { border: 1px solid var(--rule); padding: 9px 12px; display: grid; gap: 3px; }
+.score-history small { color: var(--muted); }
 @media (max-width: 1050px) {
   .top-inner, .main { padding-inline: 20px; }
   .top-inner { gap: 13px; }

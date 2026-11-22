@@ -6,8 +6,6 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from redis import Redis
 
-QUEUE = 'museum:triage'
-
 
 def connection():
     return psycopg.connect(os.environ['DATABASE_URL'], row_factory=dict_row)

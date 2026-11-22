@@ -58,14 +58,20 @@ async function render() {
   if (!store.staff) { loginPage(); return; }
   const {page, id} = currentRoute();
   try {
-    const [loans, schedule] = await Promise.all([authed('/loans'), page === 'transit' ? authed('/schedule') : []]);
+    const extra = page === 'triage'
+      ? Promise.all([authed('/model/versions'), authed('/training/jobs')])
+      : Promise.resolve([null, null]);
+    const [loans, schedule, [modelBoard, jobs]] = await Promise.all([
+      authed('/loans'), page === 'transit' ? authed('/schedule') : [], extra]);
     if (ticket !== generation) return;
     const selected = loans.find((item) => item.id === id) ?? loans.find((item) => item.review) ?? loans[0];
     const record = selected ? await authed(`/loans/${selected.id}`) : null;
     if (ticket !== generation) return;
-    Object.assign(store, {loans, record, schedule});
+    Object.assign(store, {loans, record, schedule, modelBoard, jobs: jobs ?? []});
     shell(page, renderers[page](store));
-    if (record?.triage?.status === 'queued' && page === 'triage') poll = setTimeout(render, 1600);
+    const triagePending = record?.triage?.status === 'queued';
+    const trainingPending = page === 'triage' && (jobs ?? []).some((job) => ['queued', 'running'].includes(job.status));
+    if ((triagePending || trainingPending) && page === 'triage') poll = setTimeout(render, 1600);
   } catch (err) {
     if (ticket !== generation) return;
     if (err.status === 401) { saveSession(null); loginPage(); tell(err.message, true); return; }
@@ -87,11 +93,22 @@ function target(action, fields) {
       {...fields, begins_at: fromLocal(fields.begins_at), ends_at: fromLocal(fields.ends_at)}];
   }
   if (action === 'triage') return [`${base}/triage`];
+  if (action === 'finding') {
+    return [`${base}/findings`, {
+      packing_hazard: fields.packing_hazard === 'true',
+      observation: fields.observation,
+    }];
+  }
+  if (action === 'training') return ['/training/jobs'];
+  if (action === 'resume-training') return [`/training/jobs/${fields.job_id}/resume`];
+  if (action === 'publish') return [`/model/versions/${fields.version_id}/publish`];
   return [`${base}/review/${action}`, fields];
 }
 
 const confirmations = {intake: '已建立借展档案', crate: '已保存检查记录', setup: '已登记展厅布置',
-  triage: '已提交风险分流', witness: '已签署开箱见证', decision: '已记录主管决定', sample: '封签抽检通过', reopen: '已重开复核'};
+  triage: '已提交风险分流', witness: '已签署开箱见证', decision: '已记录主管决定', sample: '封签抽检通过',
+  reopen: '已重开复核', finding: '已登记开箱实查', training: '训练任务已发起',
+  'resume-training': '已用原样本续跑', publish: '模型版本已发布'};
 
 app.addEventListener('submit', async (event) => {
   const form = event.target;

@@ -2,6 +2,7 @@ from fastapi import HTTPException
 from psycopg.errors import UniqueViolation
 
 from .loans import active_loan, change_status, dispatch_issue, dossier
+from .models import freeze_case
 from .schemas import LoanStatus
 from .storage import audit
 
@@ -69,7 +70,10 @@ def dispatch(db, loan_id, actor):
         return record, reason
     window = record['transit']
     db.execute("UPDATE transit_window SET status='dispatched' WHERE id=%s", (window['id'],))
+    # 派车档案封存：评分随档案冻结，之后版本停用也不重算、不改写。
+    freeze_case(db, record['triage']['id'])
     change_status(db, loan_id, LoanStatus.DISPATCHED)
     audit(db, loan_id, actor, 'dispatched', window_id=window['id'], vehicle=window['vehicle'],
-          seal=record['crate']['seal_code'])
+          seal=record['crate']['seal_code'], case_id=record['triage']['id'],
+          model_version=record['triage'].get('evidence', {}).get('model_version'))
     return dossier(db, loan_id), None

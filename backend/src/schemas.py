@@ -27,6 +27,7 @@ class ReviewStatus(StrEnum):
     SAMPLING = 'sampling'
     HELD = 'held'
     CLEARED = 'cleared'
+    VOIDED = 'voided'
 
 
 class Material(StrEnum):
@@ -116,3 +117,8 @@ class SampleObservation(BaseModel):
 
 class ReopenReview(BaseModel):
     reason: Reason
+
+
+class FindingIntake(BaseModel):
+    packing_hazard: bool
+    observation: Reason

@@ -14,9 +14,9 @@
 
 | 岗位 | 账号 | 页面和权限 |
 | --- | --- | --- |
-| 借展经办 | `operator` | 登记借展、补录包装与封签、排运输窗口、提交分流、签署开箱见证、抽检、派车 |
+| 借展经办 | `operator` | 登记借展、补录包装与封签、排运输窗口、提交分流、登记开箱实查、发起/续跑训练、发布模型、签署开箱见证、抽检、派车 |
 | 文保主管 | `supervisor` | 登记展厅布置，签署改判或暂缓，整改后重开复核。可调阅其余档案 |
-| 展务阅览 | `viewer` | 只读调阅借展、排程、评分和复核档案 |
+| 展务阅览 | `viewer` | 只读调阅借展、排程、评分、模型版本与复核档案 |
 
 三个演示账号使用密码 `MuseumDemo!26`。登录页的演示岗位按钮会代填相应凭据。
 
@@ -56,8 +56,8 @@ docker compose exec -T backend python -m scripts.seed_demo
 | --- | --- |
 | 界面 | 原生 HTML、CSS、JavaScript ES modules，`frontend/src/pages/`。`components.js` 提供档案索引、标题、状态印记和留痕，`format.js` 与 `api.js` 提供格式及 HTTP 工具，`store.js` 保存当前账号与借展档案。 |
 | 接口和身份 | Python 3.12、FastAPI、JWT、scrypt，`backend/src/app.py`、`security.py`、`middleware.py`。中间件统一请求编号、访问日志和服务异常。 |
-| 业务和持久层 | PostgreSQL 16、psycopg。`backend/migrations/001_archive.sql` 定义领域实体，`schemas.py` 校验输入，`loans.py`、`transit.py`、`triage.py`、`reviews.py` 执行状态规则。 |
-| 计算 | Redis 7 队列和独立 Python worker，`backend/src/worker.py`、`scoring.py`。 |
+| 业务和持久层 | PostgreSQL 16、psycopg。`backend/migrations/001_archive.sql`、`002_training.sql` 定义领域实体，`schemas.py` 校验输入，`loans.py`、`transit.py`、`triage.py`、`reviews.py`、`findings.py`、`models.py`、`training.py` 执行状态规则。 |
+| 计算 | Redis 7 双队列（评分、训练）和独立 Python worker，`backend/src/worker.py`、`scoring.py`、`training.py`、`models.py`、`findings.py`。模型为纯 NumPy 实现，不依赖 scikit-learn |
 | 部署 | Nginx 1.27、Docker Compose 五服务。Nginx 将 `/api/` 代理到 FastAPI。PostgreSQL 和 Redis 各有持久卷，后端与 worker 另有共享产物卷。模型留档实际写入 PostgreSQL。 |
 
 仅调试 Python 时，可用 Compose 启动 `db`、`redis`，把 Redis 临时通过 Compose override 映射到本机，然后在 `backend/` 安装 `requirements.txt`，设置 `DATABASE_URL`、`REDIS_URL`、`JWT_SECRET`，分别运行 `python -m src.startup` 与 `python -m src.worker`。开发界面可通过 `docker compose up -d --build frontend` 重建。
@@ -67,10 +67,14 @@ docker compose exec -T backend python -m scripts.seed_demo
 ## 模型和派车口径
 
 - 输入为材质、包装结构、路线类别、最高相对湿度和转运次数。检查保存后，经办可提交分流，形成输入快照。结果入档后，只有封签可补录，通过抽检后的封签也会冻结。
-- 三个类别用平滑目标编码。类别样本数为 `n` 时，编码为 `(该类别正例数 + 12 × 训练正例率) / (n + 12)`。训练行按 5 折交叉拟合，湿度和转运经标准化后，与编码一起输入 L2 LogisticRegression（`C=1.0`）。
-- 用种子 `2611` 生成 960 条合成检查，分层留出 25%。模型概率达到 `0.58` 生成一张开箱复核单。留出集 ROC AUC、Brier 分数、版本、参数、样本和输入 SHA-256、编码值随结果写库。概率只代表当前演示模型的分流判断。
-- PostgreSQL 保留 `queued` 状态。Redis 通知丢失时，worker 会重新推送数据库中待算的任务。计算失败保留记录并允许同一 case 重试。
-- 派车同时要求封签存在、运输窗口已确认且借展已放行。同一展厅或同一车辆的有效窗口相互排斥。高风险由经办见证、主管签字，改判低风险须留理由并抽检封签。封签不符保留失败记录，仍需重新核验。
+- 到馆开箱后在「风险分流」页登记实查：是否发现包装隐患即为训练标签，附实见记录与标签版本号。标签可更正，旧标签留痕；每笔借展只保留一条现行标签。
+- 训练样本以实查记录为准，实查不足时用同一随机种子的 960 条合成检查垫底。三个类别用平滑目标编码（平滑系数 12），湿度和转运标准化后与编码一起输入 L2 LogisticRegression（`C=1.0`，纯 NumPy 牛顿迭代实现）。
+- 训练/留出按**借展分组、按标签分层**划分：同一借展的全部样本只进训练或留出其中一边，绝不跨两边。留出集 ROC AUC、Brier、版本、参数、样本 SHA-256、编码与训练任务检查点全部写库。模型概率达到 `0.58` 生成开箱复核单。
+- 训练通过 Redis 队列异步执行，任务带样本清单与阶段检查点（manifest→encoding→fitting→metrics→persisted）。进程中断后 worker 轮询自动按断点用**原样本**续跑；每个检查点核对标签新鲜度，一旦发现清单中的实查已更正，任务立即置为 `halted` 且不生成版本，续跑请求同样被拦截，须发起新训练。
+- 训练完成只生成候选版本，经办在分流页发布后才成为当前版。发布新版本会停用旧版；**实查标签更正后，所有训练行哈希命中旧标签的版本一律停用**（含当前版），系统退回最近一个不含旧标签的可用版本（候选版优先，其次重新激活仅因发布取代而停用的干净版）；没有干净版时不设活动版，直到用更正标签重训发布。
+- 版本停用后，其评分对**未派车**批次失效：旧分写入 `triage_score_history` 留痕、案件作废并自动按当前版重新入队计算，复核单一并作废；**已派车**档案的评分冻结为 `frozen`，永不重算、原样保留。出队时若发现绑定版本已停用或评分期间版本切换，晚到的旧分直接拦截、重新排队，绝不写入判定或放行。没有活动模型版本时，分流提交与派车都会被拒绝。
+- PostgreSQL 保留 `queued` 状态。Redis 通知丢失时，worker 会重新推送数据库中待算的任务，无活动版窗口期失败的案件在新版发布后自动恢复。计算失败保留记录并允许同一 case 重试。
+- 派车同时要求封签存在、运输窗口已确认、借展已放行且持有当前有效评分。同一展厅或同一车辆的有效窗口相互排斥。高风险由经办见证、主管签字，改判低风险须留理由并抽检封签。封签不符保留失败记录，仍需重新核验。
 
 ## 共享枚举
 
@@ -79,6 +83,7 @@ docker compose exec -T backend python -m scripts.seed_demo
 | 岗位 | `migrations/001_archive.sql`、`schemas.py`、`security.py`、`app.py`、`scripts/seed_demo.py` | `constants.js`、`app.js` 和四个 `pages/` 模块 |
 | 借展状态 | SQL 约束、`schemas.py`、`loans.py`、`transit.py`、`triage.py`、`reviews.py`、`worker.py`、seed | `constants.js`、`components.js`、`pages/archive.js`、`pages/transit.js` |
 | 开箱状态 | SQL 约束、`schemas.py`、`reviews.py`、`loans.py`、`worker.py`、seed | `constants.js`、`pages/review.js`、`pages/archive.js` |
+| 模型版本/训练/评分状态 | `002_training.sql`、`schemas.py`、`models.py`、`training.py`、`worker.py`、`findings.py`、seed | `constants.js`、`pages/triage.js` |
 | 材质、包装、路线 | SQL 约束、`schemas.py`、`scoring.py`、seed | `constants.js`、`pages/archive.js`、`pages/triage.js` |
 
 许可证见 [MIT License](LICENSE)。
